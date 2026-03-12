@@ -1,0 +1,6 @@
+key,type,encoding,value
+sms_config,namespace,,
+webUser,data,string,admin
+webPass,data,string,admin123
+wifi_ssid,data,string,your_wifi_ssid
+wifi_pass,data,string,your_wifi_password

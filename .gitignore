@@ -1,0 +1,49 @@
+# ESP-IDF 构建与生成
+build/
+sdkconfig
+sdkconfig.old
+managed_components/
+dependencies.lock
+
+# Vue / Node
+web/node_modules/
+web/dist-web/
+web/dist/
+.npm
+.yarn/
+*.tsbuildinfo
+
+# 日志与运行时
+monitor_logs/*.log
+monitor_logs/*.pid
+monitor_logs/*.out
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+venv/
+.venv/
+*.egg-info/
+.eggs/
+
+# IDE 与编辑器
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# 系统
+.DS_Store
+Thumbs.db
+
+# 备份与归档
+*.tgz
+*.tar.gz
+
+# 本地/敏感（若存在）
+.env
+.env.local
+*.local
