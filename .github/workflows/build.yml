@@ -1,0 +1,46 @@
+name: ESP32 SMS Forwarder CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container: espressif/idf:release-v5.5
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: lts/*
+
+      - name: Install frontend dependencies
+        working-directory: web
+        run: npm ci
+
+      - name: Build frontend
+        working-directory: web
+        run: npm run build
+
+      - name: Build firmware with ESP-IDF
+        run: |
+          . /opt/esp/idf/export.sh
+          idf.py set-target esp32c3
+          idf.py build
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware-build
+          path: |
+            build/*.bin
+            build/bootloader/*.bin
+            build/partition_table/*.bin
+            build/flasher_args.json
+            build/flash_args
