@@ -9,18 +9,22 @@
 
 #include "app_events.h"
 #include "config.h"
+#include "esp_ota_ops.h"
 #include "modem.h"
 #include "sms.h"
 #include "wifi_mgr.h"
 #include "web_server.h"
 #include "push.h"
 #include "utils.h"
+#include "version_info.h"
 
 static const char *TAG = "main";
 static const char *SCHED_TAG = "sched";
 
 // 固件构建信息：包含编译日期和时间，用于确认当前运行的固件版本
 const char *g_fw_build = __DATE__ " " __TIME__;
+// 版本与编译信息：v1.0.1-dirty Build202603131149，供 Web 页展示
+const char *g_fw_version = APP_FW_VERSION_STR;
 
 // 短信通知队列，存储堆分配的 app_event_sms_received_data_t 指针
 // 队列深度为4，防止短时间内多条短信排队时丢失
@@ -329,7 +333,10 @@ void app_main(void)
     esp_log_level_set("sms",   ESP_LOG_DEBUG);
 
     ESP_LOGI(TAG, "====== 短信转发器启动 ======");
-    ESP_LOGI(TAG, "固件构建时间: %s", g_fw_build);
+    // 启动时打印固件版本与当前运行分区，便于排查 OTA 与回退
+    const esp_partition_t *running = esp_ota_get_running_partition();
+    ESP_LOGI(TAG, "固件版本: %s", g_fw_version);
+    ESP_LOGI(TAG, "启动分区: %s", running ? running->label : "unknown");
 
     // 初始化模组UART
     modem_init();
@@ -373,6 +380,12 @@ void app_main(void)
     }
 
     ESP_LOGI(TAG, "====== 初始化完成，各任务已就绪 ======");
+
+    // OTA 回退：仅在初始化完成后标记当前固件有效，新固件若在 init 阶段崩溃/重启则下次上电会自动回退
+    esp_err_t rollback_err = esp_ota_mark_app_valid_cancel_rollback();
+    if (rollback_err == ESP_OK) {
+        ESP_LOGI(TAG, "当前固件已标记为有效，取消回退");
+    }
 
     // 配置无效时提示一次
     if (!g_config_valid) {

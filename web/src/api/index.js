@@ -23,6 +23,11 @@ export function getNetworkStatus() {
   return get('/api/status/network')
 }
 
+/** GET /api/version：固件版本与编译信息，如 V1.0.1-dirty Build 202603131149 */
+export function getVersion() {
+  return get('/api/version').then((res) => res.fw_version ?? '')
+}
+
 /** GET /api/sms/history?offset=&limit= 短信历史，返回 { list, total } */
 export function getSmsHistory(params = {}) {
   const u = new URLSearchParams()
@@ -105,4 +110,45 @@ export function getMemory() {
 /** POST /api/push/test 测试指定推送通道，body: { index: number } */
 export function postPushTest(payload) {
   return post('/api/push/test', payload)
+}
+
+// ---------- OTA ----------
+/**
+ * POST /api/ota/upload 上传固件二进制文件（.bin），body 为 File，升级成功后设备将重启
+ * @param {File} file 固件文件
+ * @param {(percent: number) => void} [onProgress] 上传进度回调，0–100
+ * @returns {Promise<{ success: boolean, message?: string }>}
+ */
+export function uploadFirmware(file, onProgress) {
+  const url = API_BASE + '/api/ota/upload'
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest()
+    xhr.open('POST', url)
+    xhr.withCredentials = true
+    xhr.responseType = 'json'
+
+    xhr.upload.addEventListener('progress', (e) => {
+      if (e.lengthComputable && typeof onProgress === 'function') {
+        const percent = Math.round((e.loaded / e.total) * 100)
+        onProgress(percent)
+      }
+    })
+
+    xhr.addEventListener('load', () => {
+      try {
+        const data = typeof xhr.response === 'object' ? xhr.response : JSON.parse(xhr.responseText || '{}')
+        if (xhr.status >= 200 && xhr.status < 300) {
+          resolve(data)
+        } else {
+          reject(new Error(data.message || `上传失败 (${xhr.status})`))
+        }
+      } catch {
+        reject(new Error(`上传失败 (${xhr.status})`))
+      }
+    })
+    xhr.addEventListener('error', () => reject(new Error('网络错误')))
+    xhr.addEventListener('abort', () => reject(new Error('已取消')))
+
+    xhr.send(file)
+  })
 }

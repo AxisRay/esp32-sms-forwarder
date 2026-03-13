@@ -21,11 +21,14 @@
 #include "freertos/queue.h"
 #include "freertos/semphr.h"
 #include <stdarg.h>
+#include "esp_ota_ops.h"
+#include "esp_app_desc.h"
 
 static const char *TAG = "web_srv";
 
-// 来自 main.c 的全局固件构建信息（编译时间戳）
+// 来自 main.c 的全局固件构建信息（编译时间戳）与版本串（Vx.y.z-dirty Build YYYYMMDDHHmm）
 extern const char *g_fw_build;
+extern const char *g_fw_version;
 
 // 声明嵌入的前端文件
 extern const uint8_t index_html_gz_start[] asm("_binary_index_html_gz_start");
@@ -296,6 +299,16 @@ static esp_err_t api_get_config_handler(httpd_req_t *req)
     cJSON_AddStringToObject(root, "wifiSsid", ssid);
     cJSON_AddStringToObject(root, "wifiPass", pass); 
     
+    return send_json_response(req, root);
+}
+
+// GET /api/version：返回版本与编译信息，供 Web 页展示（V1.0.1-dirty Build 202603131149）
+static esp_err_t api_get_version_handler(httpd_req_t *req)
+{
+    if (strlen(g_config.web_user) > 0 && !check_auth(req)) return ESP_OK;
+
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "fw_version", g_fw_version ? g_fw_version : "");
     return send_json_response(req, root);
 }
 
@@ -1064,6 +1077,152 @@ static esp_err_t api_post_at_handler(httpd_req_t *req)
     return send_json_response(req, result);
 }
 
+// POST /api/ota/upload：请求体为完整固件二进制（application/octet-stream），流式写入 OTA 分区后重启
+#define OTA_BUF_SIZE 4096
+// ESP-IDF 固件镜像：偏移 0 为 image header magic (0xE9)，偏移 0x20 为 esp_app_desc_t.magic_word（使用 esp_app_desc.h 中的 ESP_APP_DESC_MAGIC_WORD）
+#define OTA_HEADER_MIN_LEN 0x24u
+
+// 校验前 len 字节是否为有效的 ESP-IDF 应用固件头（非任意 bin）
+static bool ota_validate_firmware_header(const uint8_t *buf, size_t len)
+{
+    if (len < OTA_HEADER_MIN_LEN) return false;
+    if (buf[0] != 0xE9) return false;  /* ESP_IMAGE_HEADER_MAGIC */
+    uint32_t app_magic;
+    memcpy(&app_magic, buf + 0x20, sizeof(app_magic));
+    return app_magic == ESP_APP_DESC_MAGIC_WORD;
+}
+
+static void ota_send_json_error(httpd_req_t *req, int status, const char *message)
+{
+    httpd_resp_set_status(req, status == 400 ? "400 Bad Request" : "500 Internal Server Error");
+    cJSON *root = cJSON_CreateObject();
+    if (root) {
+        cJSON_AddFalseToObject(root, "success");
+        cJSON_AddStringToObject(root, "message", message);
+        send_json_response(req, root);
+    } else {
+        httpd_resp_send_err(req, status == 400 ? HTTPD_400_BAD_REQUEST : HTTPD_500_INTERNAL_SERVER_ERROR, message);
+    }
+}
+
+static esp_err_t api_post_ota_upload_handler(httpd_req_t *req)
+{
+    if (strlen(g_config.web_user) > 0 && !check_auth(req)) return ESP_OK;
+
+    int content_len = req->content_len;
+    if (content_len <= 0) {
+        ota_send_json_error(req, 400, "Missing content length");
+        return ESP_OK;
+    }
+
+    const esp_partition_t *partition = esp_ota_get_next_update_partition(NULL);
+    if (partition == NULL) {
+        ota_send_json_error(req, 400, "No OTA partition available");
+        return ESP_OK;
+    }
+
+    if ((size_t)content_len > partition->size) {
+        ota_send_json_error(req, 400, "Firmware too large");
+        return ESP_OK;
+    }
+
+    // 接收超时使用服务器全局 config.recv_wait_timeout（web_server_start 中已设为 60 秒）
+
+    uint8_t *buf = malloc(OTA_BUF_SIZE);
+    if (buf == NULL) {
+        ota_send_json_error(req, 500, "Out of memory");
+        return ESP_OK;
+    }
+
+    // 先读取第一块并校验固件头，避免将非 ESP-IDF 固件写入分区
+    int first_r = httpd_req_recv(req, (char *)buf, OTA_BUF_SIZE);
+    if (first_r <= 0) {
+        free(buf);
+        ota_send_json_error(req, 500, "Read body failed");
+        return ESP_OK;
+    }
+    if ((size_t)first_r < OTA_HEADER_MIN_LEN) {
+        free(buf);
+        ota_send_json_error(req, 400, "Invalid firmware: too short");
+        return ESP_OK;
+    }
+    if (!ota_validate_firmware_header(buf, (size_t)first_r)) {
+        free(buf);
+        ESP_LOGW(TAG, "OTA 拒绝：非有效 ESP-IDF 固件镜像（魔数校验失败）");
+        ota_send_json_error(req, 400, "Invalid firmware image");
+        return ESP_OK;
+    }
+
+    esp_ota_handle_t ota_handle = 0;
+    esp_err_t err = esp_ota_begin(partition, (size_t)content_len, &ota_handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "esp_ota_begin 失败: %s", esp_err_to_name(err));
+        free(buf);
+        ota_send_json_error(req, 500, esp_err_to_name(err));
+        return ESP_OK;
+    }
+
+    size_t received_total = (size_t)first_r;
+    err = esp_ota_write(ota_handle, buf, (size_t)first_r);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "esp_ota_write 失败: %s", esp_err_to_name(err));
+        esp_ota_abort(ota_handle);
+        free(buf);
+        ota_send_json_error(req, 500, esp_err_to_name(err));
+        return ESP_OK;
+    }
+
+    bool write_ok = true;
+    while (received_total < (size_t)content_len && write_ok) {
+        size_t to_read = (size_t)content_len - received_total;
+        if (to_read > OTA_BUF_SIZE) to_read = OTA_BUF_SIZE;
+        int r = httpd_req_recv(req, (char *)buf, to_read);
+        if (r <= 0) {
+            ESP_LOGW(TAG, "OTA 接收中断: received=%u/%d", (unsigned)received_total, content_len);
+            write_ok = false;
+            break;
+        }
+        err = esp_ota_write(ota_handle, buf, (size_t)r);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "esp_ota_write 失败: %s", esp_err_to_name(err));
+            write_ok = false;
+            break;
+        }
+        received_total += (size_t)r;
+    }
+    free(buf);
+
+    if (!write_ok || received_total != (size_t)content_len) {
+        esp_ota_abort(ota_handle);
+        ota_send_json_error(req, 500, "Upload or write failed");
+        return ESP_OK;
+    }
+
+    err = esp_ota_end(ota_handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "esp_ota_end 失败: %s", esp_err_to_name(err));
+        ota_send_json_error(req, 500, esp_err_to_name(err));
+        return ESP_OK;
+    }
+
+    err = esp_ota_set_boot_partition(partition);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "esp_ota_set_boot_partition 失败: %s", esp_err_to_name(err));
+        ota_send_json_error(req, 500, esp_err_to_name(err));
+        return ESP_OK;
+    }
+
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddTrueToObject(root, "success");
+    cJSON_AddStringToObject(root, "message", "固件已写入，设备即将重启");
+    send_json_response(req, root);
+
+    ESP_LOGI(TAG, "OTA 完成，即将重启");
+    vTaskDelay(pdMS_TO_TICKS(500)); // 留出时间让响应发送完成
+    esp_restart();
+    return ESP_OK;
+}
+
 /* ========== 前端静态文件路由 ========== */
 static esp_err_t index_html_handler(httpd_req_t *req)
 {
@@ -1167,7 +1326,7 @@ httpd_handle_t web_server_start(void)
     if (s_server != NULL) return s_server;
 
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-    config.max_uri_handlers = 24;
+    config.max_uri_handlers = 26;
     config.stack_size = 20480;        // AT 回显 compressed[1024]+snprintf/vfprintf、JSON 构建等栈需求大，避免 Stack protection fault
     config.uri_match_fn = httpd_uri_match_wildcard;
     config.max_open_sockets = 6;      // 为 WebSocket /ws/log 及多请求留足连接，避免设备上 WS 无法建连
@@ -1214,6 +1373,14 @@ httpd_handle_t web_server_start(void)
             .user_ctx = NULL
         };
         httpd_register_uri_handler(s_server, &uri_api_get_config);
+
+        httpd_uri_t uri_api_get_version = {
+            .uri      = "/api/version",
+            .method   = HTTP_GET,
+            .handler  = api_get_version_handler,
+            .user_ctx = NULL
+        };
+        httpd_register_uri_handler(s_server, &uri_api_get_version);
 
         httpd_uri_t uri_api_post_config = {
             .uri      = "/api/config",
@@ -1350,6 +1517,14 @@ httpd_handle_t web_server_start(void)
             .user_ctx = NULL
         };
         httpd_register_uri_handler(s_server, &uri_api_debug_ping);
+
+        httpd_uri_t uri_api_ota_upload = {
+            .uri      = "/api/ota/upload",
+            .method   = HTTP_POST,
+            .handler  = api_post_ota_upload_handler,
+            .user_ctx = NULL
+        };
+        httpd_register_uri_handler(s_server, &uri_api_ota_upload);
 
         // 首页及所有其他路由
         httpd_uri_t uri_index = {

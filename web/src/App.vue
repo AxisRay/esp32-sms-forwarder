@@ -1,13 +1,19 @@
 <script setup>
-import { ref, watch } from 'vue'
+import { ref, watch, onMounted } from 'vue'
 import zhCn from 'element-plus/dist/locale/zh-cn.mjs'
 import StatusView from './views/StatusView.vue'
 import ConfigView from './views/ConfigView.vue'
 import ScheduleView from './views/ScheduleView.vue'
 import LogView from './views/LogView.vue'
+import { getVersion } from './api'
 
 const activeTab = ref('status')
 const statusRef = ref(null)
+const fwVersion = ref('')
+
+onMounted(() => {
+  getVersion().then((v) => { fwVersion.value = v }).catch(() => {})
+})
 
 watch(activeTab, (tab) => {
   if (tab === 'status') statusRef.value?.refreshSms()
@@ -19,6 +25,7 @@ watch(activeTab, (tab) => {
   <div class="app">
     <header class="app-header">
       <h1>ESP32短信转发器</h1>
+      <span v-if="fwVersion" class="app-version">{{ fwVersion }}</span>
     </header>
     <main class="app-main">
       <el-tabs v-model="activeTab" class="main-tabs">
@@ -375,12 +382,22 @@ html, body {
   padding: 16px 24px;
   border-bottom: 1px solid var(--app-card-border);
   background: var(--app-card-bg);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
 }
 .app-header h1 {
   margin: 0;
   font-size: 18px;
   font-weight: 600;
   color: var(--app-text);
+}
+.app-version {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  font-family: ui-monospace, monospace;
 }
 
 .app-main {

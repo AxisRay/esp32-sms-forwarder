@@ -171,13 +171,42 @@
       </div>
       <el-button type="default" plain class="btn-add-block" :disabled="pushChannels.length >= 5" @click="addChannel">+ 新增通道（最多5个）</el-button>
     </el-card>
+
+    <el-card header="固件升级" shadow="never" class="app-card ota-card">
+      <p class="ota-desc">选择 .bin 固件上传即可升级，升级成功后设备将自动重启。升级过程中请勿断电。</p>
+      <div class="ota-upload">
+        <input
+          ref="otaFileInputRef"
+          type="file"
+          accept=".bin"
+          class="ota-file-input"
+          :disabled="otaUploading"
+          @change="onOtaFileChange"
+        />
+        <div class="ota-file-name">{{ otaFileName || '未选择文件' }}</div>
+        <el-button
+          type="primary"
+          :loading="otaUploading"
+          :disabled="!otaFile"
+          @click="doOtaUpload"
+        >
+          上传并升级
+        </el-button>
+      </div>
+      <el-progress
+        v-if="otaUploading && otaProgress >= 0"
+        :percentage="otaProgress"
+        :status="otaProgress >= 100 ? 'success' : undefined"
+        class="ota-progress"
+      />
+    </el-card>
   </div>
 </template>
 
 <script setup>
 import { ref, reactive, computed, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
-import { getWifiConfig, saveWifiConfig as apiSaveWifi, getAuthConfig, saveAuthConfig as apiSaveAuth, getPushConfig, savePushConfig as apiSavePush, postPushTest } from '../api'
+import { getWifiConfig, saveWifiConfig as apiSaveWifi, getAuthConfig, saveAuthConfig as apiSaveAuth, getPushConfig, savePushConfig as apiSavePush, postPushTest, uploadFirmware } from '../api'
 
 const wifiFormRef = ref(null)
 const wifiForm = reactive({
@@ -207,6 +236,13 @@ const authFormDirty = computed(
 
 const pushChannels = ref([])
 const saving = reactive({ wifi: false, auth: false, push: false })
+
+// 固件升级
+const otaFileInputRef = ref(null)
+const otaFile = ref(null)
+const otaFileName = ref('')
+const otaUploading = ref(false)
+const otaProgress = ref(-1)
 
 const pushTypeOptions = [
   { value: 1, label: 'POST' },
@@ -253,6 +289,34 @@ function addChannel() {
 
 function removeChannel(index) {
   pushChannels.value.splice(index, 1)
+}
+
+function onOtaFileChange(e) {
+  const f = e.target.files?.[0]
+  otaFile.value = f || null
+  otaFileName.value = f ? f.name : ''
+}
+
+async function doOtaUpload() {
+  const file = otaFile.value
+  if (!file || otaUploading.value) return
+  otaUploading.value = true
+  otaProgress.value = 0
+  try {
+    await uploadFirmware(file, (percent) => {
+      otaProgress.value = percent
+    })
+    otaProgress.value = 100
+    ElMessage.success('固件已上传，设备即将重启')
+    otaFile.value = null
+    otaFileName.value = ''
+    if (otaFileInputRef.value) otaFileInputRef.value.value = ''
+  } catch (e) {
+    ElMessage.error(e?.message || '上传失败')
+  } finally {
+    otaUploading.value = false
+    otaProgress.value = -1
+  }
 }
 
 async function testChannel(index) {
@@ -406,6 +470,12 @@ onMounted(() => {
 .auth-desc { font-size: 12px; color: var(--el-text-color-secondary); margin: 0 0 12px 0; text-align: left; }
 .push-card { margin-top: 16px; }
 .push-desc { font-size: 12px; color: var(--el-text-color-secondary); margin-bottom: 12px; text-align: left; }
+.ota-card { margin-top: 16px; }
+.ota-desc { font-size: 12px; color: var(--el-text-color-secondary); margin: 0 0 12px 0; text-align: left; }
+.ota-upload { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.ota-file-input { flex: 0 0 auto; }
+.ota-file-name { font-size: 13px; color: var(--el-text-color-secondary); min-width: 120px; }
+.ota-progress { margin-top: 12px; max-width: 320px; }
 .collapse-card + .collapse-card { margin-top: 10px; }
 @media (max-width: 480px) {
   .channel-form :deep(.el-form-item__label) { width: 74px !important; }

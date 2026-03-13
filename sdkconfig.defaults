@@ -13,6 +13,9 @@ CONFIG_HTTPD_WS_SUPPORT=y
 # 分区改为双 OTA 大分区（4MB Flash）
 CONFIG_PARTITION_TABLE_TWO_OTA_LARGE=y
 
+# OTA 自动回退：新固件启动后若未调用 esp_ota_mark_app_valid_cancel_rollback() 即会回退到旧固件
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
+
 # Flash 大小设置为 4MB（与分区表匹配，避免 CI 报 2MB 不足）
 CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
 

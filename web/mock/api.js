@@ -137,6 +137,12 @@ export function createMockApiMiddleware() {
       return
     }
 
+    // GET /api/version -> 固件版本与编译信息
+    if (method === 'GET' && url === '/api/version') {
+      sendJson(res, 200, { fw_version: 'V1.0.0 Build 202603131149 [Mock]' })
+      return
+    }
+
     // GET /api/sms/history?offset=0&limit=20
     if (method === 'GET' && url === '/api/sms/history') {
       const u = new URL(req.url || '', 'http://localhost')

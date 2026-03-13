@@ -2,11 +2,12 @@ idf_component_register(
     SRCS "main.c"
     INCLUDE_DIRS "."
     REQUIRES 
-        esp_driver_gpio
         app_core
-        network_manager
+        app_update
+        esp_driver_gpio
+        esp_timer
         modem_driver
+        network_manager
         notification
         web_server
-        esp_timer
 )
